@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Runner for Coins — Single File Game</title>
+  <style>
+    :root{--bg:#0b1220;--ground:#1d2935;--player:#ff6b6b;--coin:#ffd166;--accent:#7bd389}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial;background:linear-gradient(180deg,var(--bg) 0%, #071028 60%);color:#e6eef8}
+    .wrap{display:flex;gap:24px;align-items:flex-start;justify-content:center;padding:20px}
+    .panel{width:420px;max-width:calc(100vw - 40px)}
+    header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+    header h1{font-size:18px;margin:0}
+    #gameCanvas{width:100%;height:480px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.15));border-radius:12px;display:block}
+    .controls{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+    .btn{background:var(--accent);color:#023020;padding:8px 10px;border-radius:8px;border:none;font-weight:600;cursor:pointer}
+    .small{font-size:13px;color:#b9c6d8;margin-top:8px}
+    .scoreboard{margin-top:14px;padding:12px;background:rgba(255,255,255,0.02);border-radius:8px}
+    .info{font-size:14px}
+    footer{font-size:12px;color:#9fb0c8;margin-top:8px}
+    /* Mobile touch button */
+    .touchControls{display:flex;gap:8px;margin-top:12px}
+    .touchBtn{flex:1;padding:10px;border-radius:8px;background:#0f1720;color:#bfe6c6;border:1px solid rgba(255,255,255,0.04)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <header>
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="22" height="22" rx="6" fill="#7bd389"/><path d="M8 12h8" stroke="#042f1c" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <div>
+          <h1>Runner for Coins</h1>
+          <div class="small">Use ← → to move, Space / Up to jump. Collect coins — survive as long as you can!</div>
+        </div>
+      </header>
+
+      <canvas id="gameCanvas" width="800" height="480" tabindex="0"></canvas>
+
+      <div class="controls">
+        <button class="btn" id="startBtn">Start / Restart</button>
+        <button class="btn" id="pauseBtn">Pause</button>
+        <div style="flex:1"></div>
+      </div>
+
+      <div class="scoreboard" id="hud">
+        <div class="info">Score: <span id="score">0</span> &nbsp; | &nbsp; Coins: <span id="coins">0</span> &nbsp; | &nbsp; Time: <span id="time">0.0s</span></div>
+        <div class="small">Tip: speed increases over time. Don't fall off the platform!</div>
+      </div>
+
+      <div class="touchControls" id="touchControls" style="display:none">
+        <button class="touchBtn" id="leftTouch">◀</button>
+        <button class="touchBtn" id="jumpTouch">▲ Jump</button>
+        <button class="touchBtn" id="rightTouch">▶</button>
+      </div>
+
+      <footer>Made with ❤️ — edit the file to tweak difficulty or graphics.</footer>
+    </div>
+  </div>
+
+  <script>
+  // Single-file runner game
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const scoreEl = document.getElementById('score');
+  const coinsEl = document.getElementById('coins');
+  const timeEl = document.getElementById('time');
+  const touchControls = document.getElementById('touchControls');
+
+  let W = canvas.width, H = canvas.height;
+  let lastTime = 0, dt = 0;
+  let running = false, paused = false;
+  let gameTime = 0;
+
+  // World
+  const groundY = H - 80;
+  const gravity = 1800; // px/s^2
+
+  // Player
+  const player = {
+    x: 100, y: groundY - 48, w: 40, h: 48,
+    vx: 0, vy: 0, speed: 260, onGround: true,
+    color: getComputedStyle(document.documentElement).getPropertyValue('--player').trim() || '#ff6b6b'
+  };
+
+  // Coins
+  let coins = [];
+  let coinCount = 0;
+
+  // Obstacles (simple gaps) -> we'll create platforms
+  let platforms = [];
+
+  // Difficulty
+  let baseSpeed = 180; // world scroll speed
+  let difficulty = 0; // increases with time
+
+  // Input
+  const keys = {};
+  window.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Spacebar') e.preventDefault(); keys[e.key]=true; });
+  window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+  // Touch controls
+  function showTouch() { touchControls.style.display = 'flex'; }
+  function hideTouch() { touchControls.style.display = 'none'; }
+  document.getElementById('leftTouch').addEventListener('touchstart', ()=>keys['ArrowLeft']=true); document.getElementById('leftTouch').addEventListener('touchend', ()=>keys['ArrowLeft']=false);
+  document.getElementById('rightTouch').addEventListener('touchstart', ()=>keys['ArrowRight']=true); document.getElementById('rightTouch').addEventListener('touchend', ()=>keys['ArrowRight']=false);
+  document.getElementById('jumpTouch').addEventListener('touchstart', ()=>{ keys['ArrowUp']=true; setTimeout(()=>keys['ArrowUp']=false,200); });
+
+  // Detect mobile to show touch
+  if(/Mobi|Android/i.test(navigator.userAgent)) showTouch();
+
+  // Helpers
+  function rand(min,max){return Math.random()*(max-min)+min}
+
+  function spawnPlatform(x,w,heightOffset=0){
+    platforms.push({x, w, y: groundY + heightOffset});
+  }
+
+  function resetGame(){
+    // reset
+    player.x = 100; player.y = groundY - player.h; player.vx=0; player.vy=0; player.onGround=true;
+    coins = []; platforms = [];
+    coinCount = 0; gameTime = 0; difficulty = 0; baseSpeed = 180;
+    // create initial long platform
+    platforms.push({x: -1000, w: 4000, y: groundY});
+    // spawn some coins ahead
+    for(let i=1;i<6;i++) spawnCoin(400 + i*220);
+  }
+
+  function spawnCoin(x){
+    const y = groundY - 30 - rand(0,140);
+    coins.push({x, y, r:12, collected:false});
+  }
+
+  // Game loop
+  function gameTick(timestamp){
+    if(!lastTime) lastTime = timestamp;
+    dt = (timestamp - lastTime)/1000; lastTime = timestamp;
+    if(!paused && running){
+      update(dt);
+      render();
+    } else if(!running){ renderStartScreen(); }
+    if(running) requestAnimationFrame(gameTick);
+  }
+
+  function update(dt){
+    gameTime += dt;
+    difficulty = Math.min(1.5, gameTime / 45);
+    const scrollSpeed = baseSpeed + difficulty*200;
+
+    // Input movement
+    let move = 0;
+    if(keys['ArrowLeft'] || keys['a'] || keys['A']) move = -1;
+    if(keys['ArrowRight'] || keys['d'] || keys['D']) move = 1;
+    player.vx = move * player.speed;
+
+    // Jump
+    if((keys['ArrowUp'] || keys['w'] || keys['W'] || keys[' ']) && player.onGround){
+      player.vy = -650; player.onGround = false;
+    }
+
+    // Physics
+    player.vy += gravity * dt;
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
+
+    // Ground collision / platforms
+    player.onGround = false;
+    for(let p of platforms){
+      // move platforms left to simulate world scrolling
+      p.x -= scrollSpeed * dt;
+      // check collision only if player is above platform top and within x-range
+      const px1 = p.x, px2 = p.x + p.w;
+      const py = p.y - player.h;
+      if(player.x + player.w > px1 && player.x < px2){
+        if(player.y + player.h > p.y - 2 && player.y + player.h < p.y + 20 && player.vy >= 0){
+          player.y = p.y - player.h; player.vy = 0; player.onGround = true;
+        }
+      }
+    }
+
+    // If player falls below canvas -> game over
+    if(player.y > H + 200){
+      endGame(); return;
+    }
+
+    // Scroll world: keep player x near left side
+    if(player.x < 80) player.x = 80;
+    if(player.x > W * 0.6) player.x = W * 0.6; // prevent running too far right
+
+    // Move coins
+    for(let c of coins){ c.x -= scrollSpeed * dt; }
+
+    // Remove offscreen coins & spawn new
+    if(coins.length && coins[0].x < -100) coins.shift();
+    while(coins.length < 6){
+      const lastX = coins.length ? coins[coins.length-1].x : 700;
+      spawnCoin(lastX + rand(180, 320));
+    }
+
+    // Spawn platform gaps occasionally
+    if(platforms.length && platforms[platforms.length-1].x + platforms[platforms.length-1].w < W + 400){
+      // create next platform with possible gap
+      const last = platforms[platforms.length-1];
+      const gap = Math.random() < 0.25 ? rand(120, 260) : 0;
+      const w = rand(300, 900);
+      spawnPlatform(last.x + last.w + gap, w);
+    }
+
+    // Remove old platforms
+    if(platforms.length && platforms[0].x + platforms[0].w < -1200) platforms.shift();
+
+    // Coin collection
+    for(let c of coins){
+      if(!c.collected && rectCircleColl(player, c)){
+        c.collected = true; coinCount++;
+      }
+    }
+
+    // Update HUD
+    scoreEl.textContent = Math.floor(gameTime*10 + coinCount*100);
+    coinsEl.textContent = coinCount;
+    timeEl.textContent = gameTime.toFixed(1) + 's';
+  }
+
+  function rectCircleColl(rect, circle){
+    const cx = circle.x, cy = circle.y;
+    const rx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+    const ry = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+    const dx = cx - rx, dy = cy - ry;
+    return (dx*dx + dy*dy) <= (circle.r*circle.r);
+  }
+
+  function render(){
+    // clear
+    ctx.clearRect(0,0,W,H);
+
+    // background subtle stars
+    drawBackground();
+
+    // platforms (ground)
+    for(let p of platforms){
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ground').trim() || '#1d2935';
+      roundRect(ctx, p.x, p.y, p.w, H - p.y + 4, 6, true, false);
+    }
+
+    // coins
+    for(let c of coins){
+      if(c.collected) continue;
+      drawCoin(c.x, c.y, c.r);
+    }
+
+    // player
+    drawPlayer(player);
+
+    // HUD inline (small floating)
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(12,12,180,42);
+    ctx.fillStyle = '#e6eef8'; ctx.font = '14px system-ui'; ctx.fillText('Score: ' + scoreEl.textContent, 20, 32);
+  }
+
+  function drawBackground(){
+    // simple parallax hills
+    // sky gradient is CSS background, draw some subtle shapes
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    for(let i=0;i<6;i++){
+      const x = (i*230 + (gameTime*15 % 230)) % (W+260) - 120;
+      ctx.beginPath(); ctx.ellipse(x, 120 + (i%2)*30, 200, 80, 0,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  function drawCoin(x,y,r){
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--coin').trim() || '#ffd166'; ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle = 'rgba(0,0,0,0.06)'; ctx.fillRect(x-2, y-2, 4, 4);
+  }
+
+  function drawPlayer(p){
+    // shadow
+    ctx.beginPath(); ctx.ellipse(p.x + p.w/2, p.y + p.h + 6, p.w*0.6, 10, 0,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
+    // body (rounded rect)
+    ctx.fillStyle = p.color; roundRect(ctx, p.x, p.y, p.w, p.h, 8, true, false);
+    // eyes
+    ctx.fillStyle = '#00121a'; ctx.fillRect(p.x + 8, p.y + 14, 6, 6); ctx.fillRect(p.x + p.w-14, p.y + 14, 6, 6);
+    // smile
+    ctx.beginPath(); ctx.arc(p.x + p.w/2, p.y + 30, 8, 0, Math.PI); ctx.strokeStyle='rgba(0,0,0,0.14)'; ctx.lineWidth=2; ctx.stroke();
+  }
+
+  // Utility: rounded rect
+  function roundRect(ctx,x,y,w,h,r,fill,stroke){ if(typeof r==='undefined') r=5; ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); if(fill) ctx.fill(); if(stroke) ctx.stroke(); }
+
+  // Start / pause / end
+  function startGame(){ if(running){ restart(); return;} running = true; paused=false; lastTime=0; resetGame(); requestAnimationFrame(gameTick); }
+  function restart(){ resetGame(); }
+  function pauseToggle(){ paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; }
+  function endGame(){ running = false; paused = false; // show game over overlay
+    render();
+    ctx.fillStyle = 'rgba(2,8,12,0.7)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = '#fff'; ctx.font='28px system-ui'; ctx.textAlign='center'; ctx.fillText('Game Over', W/2, H/2 - 24);
+    ctx.font='18px system-ui'; ctx.fillText('Score: ' + scoreEl.textContent + ' — Coins: ' + coinCount, W/2, H/2 + 6);
+    ctx.textAlign='left';
+  }
+
+  // Buttons
+  startBtn.addEventListener('click', ()=>{ startGame(); startBtn.blur(); });
+  pauseBtn.addEventListener('click', ()=>{ pauseToggle(); pauseBtn.blur(); });
+
+  // Resize handling
+  function resize(){
+    const ratio = devicePixelRatio || 1;
+    W = canvas.width = Math.min(1200, Math.floor(window.innerWidth * 0.9));
+    H = canvas.height = Math.min(640, Math.floor(window.innerHeight * 0.6));
+    canvas.style.height = H + 'px';
+    canvas.style.width = '100%';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Initial render
+  function renderStartScreen(){
+    ctx.clearRect(0,0,W,H);
+    drawBackground();
+    ctx.fillStyle = '#e6eef8'; ctx.font='28px system-ui'; ctx.textAlign='center'; ctx.fillText('Runner for Coins', W/2, H/2 - 40);
+    ctx.font='16px system-ui'; ctx.fillText('Press Start to Run. Collect coins and survive!', W/2, H/2 - 10);
+    ctx.font='14px system-ui'; ctx.fillText('Controls: ← → Jump: Space / Up', W/2, H/2 + 18);
+    ctx.textAlign='left';
+  }
+  renderStartScreen();
+
+  // Auto-focus canvas for keyboard
+  canvas.addEventListener('click', ()=>canvas.focus());
+  canvas.focus();
+  </script>
+</body>
+</html>
